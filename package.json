@@ -1,0 +1,15 @@
+{
+  "name": "line-bookkeeping-dog-bot",
+  "version": "1.0.0",
+  "description": "記帳小狗 - 全免費版：LINE 免費方案 + Gemini 免費額度 + Render 免費主機",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "@line/bot-sdk": "^9.4.1",
+    "@google/generative-ai": "^0.21.0",
+    "sqlite3": "^5.1.7"
+  }
+}
