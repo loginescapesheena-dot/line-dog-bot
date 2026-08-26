@@ -4,7 +4,7 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
 
 // ===== 小狗的靈魂：個性設定 =====
 const DOG_PERSONA = `你是「記帳小狗」，一隻幫主人記帳的可愛小狗，個性設定如下：
