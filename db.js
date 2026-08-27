@@ -1,105 +1,83 @@
 // db.js
-// SQLite 資料庫模組：記帳紀錄 + 使用者清單（用於每月推播）
+// Supabase（PostgreSQL）版本：記帳紀錄 + 使用者清單（用於每月推播）
+// 需要環境變數: SUPABASE_URL, SUPABASE_SERVICE_KEY
 
-const sqlite3 = require('sqlite3').verbose();
-const db = new sqlite3.Database('./bookkeeping.db');
+const { createClient } = require('@supabase/supabase-js');
 
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS records (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id TEXT NOT NULL,
-    category TEXT,
-    amount REAL,
-    type TEXT, -- 'income' or 'expense'
-    note TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
 
-  db.run(`CREATE TABLE IF NOT EXISTS users (
-    user_id TEXT PRIMARY KEY,
-    display_name TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-});
-
-function upsertUser(userId, displayName) {
-  return new Promise((resolve, reject) => {
-    db.run(
-      `INSERT INTO users (user_id, display_name) VALUES (?, ?)
-       ON CONFLICT(user_id) DO UPDATE SET display_name = excluded.display_name`,
-      [userId, displayName || ''],
-      (err) => (err ? reject(err) : resolve())
-    );
-  });
+async function upsertUser(userId, displayName) {
+  const { error } = await supabase
+    .from('users')
+    .upsert({ user_id: userId, display_name: displayName || '' }, { onConflict: 'user_id' });
+  if (error) throw error;
 }
 
-function insertRecord({ userId, category, amount, type, note }) {
-  return new Promise((resolve, reject) => {
-    db.run(
-      `INSERT INTO records (user_id, category, amount, type, note) VALUES (?, ?, ?, ?, ?)`,
-      [userId, category, amount, type, note || ''],
-      function (err) {
-        if (err) return reject(err);
-        resolve(this.lastID);
-      }
-    );
-  });
+async function insertRecord({ userId, category, amount, type, note }) {
+  const { data, error } = await supabase
+    .from('records')
+    .insert({ user_id: userId, category, amount, type, note: note || '' })
+    .select('id')
+    .single();
+  if (error) throw error;
+  return data.id;
 }
 
-function getRecentRecords(userId, limit = 5) {
-  return new Promise((resolve, reject) => {
-    db.all(
-      `SELECT category, amount, type, note FROM records
-       WHERE user_id = ? ORDER BY created_at DESC LIMIT ?`,
-      [userId, limit],
-      (err, rows) => (err ? reject(err) : resolve(rows))
-    );
-  });
+async function getRecentRecords(userId, limit = 5) {
+  const { data, error } = await supabase
+    .from('records')
+    .select('category, amount, type, note')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return data;
 }
 
-function getAllUserIds() {
-  return new Promise((resolve, reject) => {
-    db.all(`SELECT user_id FROM users`, [], (err, rows) => {
-      if (err) return reject(err);
-      resolve(rows.map((r) => r.user_id));
-    });
-  });
+async function getAllUserIds() {
+  const { data, error } = await supabase.from('users').select('user_id');
+  if (error) throw error;
+  return data.map((r) => r.user_id);
 }
 
 // 撈取某使用者「上個月」的統計資料
-function getMonthlySummary(userId) {
-  return new Promise((resolve, reject) => {
-    db.all(
-      `SELECT category, type, SUM(amount) as total, COUNT(*) as cnt
-       FROM records
-       WHERE user_id = ?
-         AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now', '-1 month')
-       GROUP BY category, type`,
-      [userId],
-      (err, rows) => {
-        if (err) return reject(err);
+async function getMonthlySummary(userId) {
+  const now = new Date();
+  // 上個月的第一天
+  const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  // 這個月的第一天（當作上個月的結束邊界，不含）
+  const end = new Date(now.getFullYear(), now.getMonth(), 1);
 
-        let totalIncome = 0;
-        let totalExpense = 0;
-        let recordCount = 0;
-        const byCategory = [];
+  const { data, error } = await supabase
+    .from('records')
+    .select('category, amount, type')
+    .eq('user_id', userId)
+    .gte('created_at', start.toISOString())
+    .lt('created_at', end.toISOString());
+  if (error) throw error;
 
-        rows.forEach((r) => {
-          recordCount += r.cnt;
-          if (r.type === 'income') {
-            totalIncome += r.total;
-          } else {
-            totalExpense += r.total;
-            byCategory.push({ category: r.category, total: r.total });
-          }
-        });
+  let totalIncome = 0;
+  let totalExpense = 0;
+  let recordCount = data.length;
+  const categoryTotals = {};
 
-        byCategory.sort((a, b) => b.total - a.total);
-
-        resolve({ totalIncome, totalExpense, byCategory, recordCount });
-      }
-    );
+  data.forEach((r) => {
+    if (r.type === 'income') {
+      totalIncome += Number(r.amount);
+    } else {
+      totalExpense += Number(r.amount);
+      categoryTotals[r.category] = (categoryTotals[r.category] || 0) + Number(r.amount);
+    }
   });
+
+  const byCategory = Object.entries(categoryTotals)
+    .map(([category, total]) => ({ category, total }))
+    .sort((a, b) => b.total - a.total);
+
+  return { totalIncome, totalExpense, byCategory, recordCount };
 }
 
 module.exports = {
