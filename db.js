@@ -1,5 +1,5 @@
 // db.js
-// Supabase（PostgreSQL）版本：記帳紀錄 + 使用者清單（用於每月推播）
+// Supabase（PostgreSQL）版本：記帳紀錄 + 使用者清單 + 使用者輸入狀態機
 // 需要環境變數: SUPABASE_URL, SUPABASE_SERVICE_KEY
 
 const { createClient } = require('@supabase/supabase-js');
@@ -43,13 +43,12 @@ async function getAllUserIds() {
   return data.map((r) => r.user_id);
 }
 
-// 撈取某使用者「上個月」的統計資料
-async function getMonthlySummary(userId) {
+// 撈取某使用者某個月的統計資料
+// monthOffset: 0 = 這個月, -1 = 上個月
+async function getMonthSummary(userId, monthOffset = 0) {
   const now = new Date();
-  // 上個月的第一天
-  const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  // 這個月的第一天（當作上個月的結束邊界，不含）
-  const end = new Date(now.getFullYear(), now.getMonth(), 1);
+  const start = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  const end = new Date(now.getFullYear(), now.getMonth() + monthOffset + 1, 1);
 
   const { data, error } = await supabase
     .from('records')
@@ -77,7 +76,38 @@ async function getMonthlySummary(userId) {
     .map(([category, total]) => ({ category, total }))
     .sort((a, b) => b.total - a.total);
 
-  return { totalIncome, totalExpense, byCategory, recordCount };
+  return {
+    totalIncome,
+    totalExpense,
+    net: totalIncome - totalExpense,
+    byCategory,
+    recordCount,
+  };
+}
+
+// ===== 使用者輸入狀態機（Rich Menu 導引流程用）=====
+async function setUserState(userId, state) {
+  const { error } = await supabase
+    .from('user_state')
+    .upsert({ user_id: userId, state, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+  if (error) throw error;
+}
+
+async function getUserState(userId) {
+  const { data, error } = await supabase
+    .from('user_state')
+    .select('state')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? data.state : null;
+}
+
+async function clearUserState(userId) {
+  const { error } = await supabase
+    .from('user_state')
+    .upsert({ user_id: userId, state: null, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+  if (error) throw error;
 }
 
 module.exports = {
@@ -85,5 +115,8 @@ module.exports = {
   insertRecord,
   getRecentRecords,
   getAllUserIds,
-  getMonthlySummary,
+  getMonthSummary,
+  setUserState,
+  getUserState,
+  clearUserState,
 };
