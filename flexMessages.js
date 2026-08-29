@@ -1,29 +1,49 @@
 // flexMessages.js
-// 記帳確認卡片（Flex Message），支出/收入風格一致但顏色區分
+// 記帳確認卡片（Flex Message）— 黑白灰棕質感風格
+// 支出/收入用同一套棕色調，靠正負號跟細節區分，不用對比色分開
+
+const COLOR_BG = '#F5F0EA';
+const COLOR_BROWN = '#6B4A34';
+const COLOR_BROWN_SOFT = '#8B6B54';
+const COLOR_CHARCOAL = '#3A322C';
+const COLOR_LINE = '#DCD2C6';
 
 function buildRecordConfirmCard({ type, category, amount, note, dogReply, monthNet }) {
   const isIncome = type === 'income';
-  const headerColor = isIncome ? '#66BB6A' : '#FF8A65';
-  const headerText = isIncome ? '💰 收入記錄' : '🧾 支出記錄';
-  const amountText = `${isIncome ? '+' : '-'}${amount} 元`;
+  const headerText = isIncome ? '收入記錄' : '支出記錄';
+  const headerSub = isIncome ? 'INCOME' : 'EXPENSE';
+  const amountText = `${isIncome ? '+' : '－'} ${amount}`;
 
   return {
     type: 'flex',
     altText: `${headerText}：${category} ${amount} 元`,
     contents: {
       type: 'bubble',
+      styles: {
+        body: { backgroundColor: COLOR_BG },
+        footer: { backgroundColor: COLOR_BG },
+      },
       header: {
         type: 'box',
         layout: 'vertical',
-        backgroundColor: headerColor,
+        backgroundColor: COLOR_BG,
         paddingAll: 'lg',
+        paddingBottom: 'none',
         contents: [
           {
             type: 'text',
+            text: headerSub,
+            size: 'xs',
+            color: COLOR_BROWN_SOFT,
+            letterSpacing: '2px',
+          },
+          {
+            type: 'text',
             text: headerText,
-            color: '#FFFFFF',
+            color: COLOR_CHARCOAL,
             weight: 'bold',
-            size: 'lg',
+            size: 'xl',
+            margin: 'xs',
           },
         ],
       },
@@ -32,28 +52,23 @@ function buildRecordConfirmCard({ type, category, amount, note, dogReply, monthN
         layout: 'vertical',
         spacing: 'md',
         paddingAll: 'lg',
+        backgroundColor: COLOR_BG,
         contents: [
           {
-            type: 'box',
-            layout: 'baseline',
-            contents: [
-              { type: 'text', text: '分類', size: 'sm', color: '#999999', flex: 2 },
-              { type: 'text', text: category, size: 'md', flex: 5, wrap: true },
-            ],
+            type: 'text',
+            text: amountText,
+            size: '3xl',
+            weight: 'bold',
+            color: COLOR_BROWN,
           },
+          { type: 'separator', margin: 'md', color: COLOR_LINE },
           {
             type: 'box',
             layout: 'baseline',
+            margin: 'md',
             contents: [
-              { type: 'text', text: '金額', size: 'sm', color: '#999999', flex: 2 },
-              {
-                type: 'text',
-                text: amountText,
-                size: 'xl',
-                weight: 'bold',
-                flex: 5,
-                color: isIncome ? '#2E7D32' : '#D84315',
-              },
+              { type: 'text', text: '分類', size: 'sm', color: COLOR_BROWN_SOFT, flex: 2 },
+              { type: 'text', text: category, size: 'md', flex: 5, wrap: true, color: COLOR_CHARCOAL },
             ],
           },
           ...(note
@@ -62,28 +77,28 @@ function buildRecordConfirmCard({ type, category, amount, note, dogReply, monthN
                   type: 'box',
                   layout: 'baseline',
                   contents: [
-                    { type: 'text', text: '備註', size: 'sm', color: '#999999', flex: 2 },
-                    { type: 'text', text: note, size: 'sm', flex: 5, wrap: true, color: '#666666' },
+                    { type: 'text', text: '備註', size: 'sm', color: COLOR_BROWN_SOFT, flex: 2 },
+                    { type: 'text', text: note, size: 'sm', flex: 5, wrap: true, color: COLOR_CHARCOAL },
                   ],
                 },
               ]
             : []),
-          { type: 'separator', margin: 'md' },
+          { type: 'separator', margin: 'md', color: COLOR_LINE },
           {
             type: 'text',
-            text: `🐶 ${dogReply}`,
+            text: dogReply,
             size: 'sm',
             wrap: true,
             margin: 'md',
-            color: '#555555',
+            color: COLOR_CHARCOAL,
           },
           ...(monthNet !== undefined && monthNet !== null
             ? [
                 {
                   type: 'text',
-                  text: `本月結餘：${monthNet >= 0 ? '+' : ''}${monthNet} 元`,
+                  text: `本月結餘　${monthNet >= 0 ? '+' : '－'} ${Math.abs(monthNet)}`,
                   size: 'xs',
-                  color: '#999999',
+                  color: COLOR_BROWN_SOFT,
                   margin: 'sm',
                 },
               ]
