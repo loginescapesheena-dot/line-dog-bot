@@ -107,53 +107,38 @@ function buildRecordConfirmCard({ type, category, amount, note, dogReply, monthN
   };
 }
 
-// ===== 長條圖：每列一個分類，用 box 的 flex 比例模擬長條寬度 =====
-function buildBarRows(byCategory, maxItems = 5) {
+// ===== 用 QuickChart（免費圖表服務）產生圓餅圖圖片網址 =====
+const PIE_COLORS = ['#6B4A34', '#A98F76', '#3A322C', '#C9BBAF', '#8B6B54', '#D9CBB8', '#4A3728'];
+
+function buildCategoryPieChartUrl(byCategory, maxItems = 6) {
+  if (!byCategory || byCategory.length === 0) return null;
+
   const items = byCategory.slice(0, maxItems);
-  if (items.length === 0) return [];
-
-  const maxTotal = Math.max(...items.map((c) => c.total));
-  const BAR_UNIT = 20; // 長條總刻度，數字越大解析度越細
-
-  return items.map((c) => {
-    const barFlex = Math.max(1, Math.round((c.total / maxTotal) * BAR_UNIT));
-    const spacerFlex = BAR_UNIT - barFlex;
-
-    return {
-      type: 'box',
-      layout: 'vertical',
-      spacing: 'xs',
-      margin: 'md',
-      contents: [
+  const chartConfig = {
+    type: 'pie',
+    data: {
+      labels: items.map((c) => `${c.category}　${c.total}元`),
+      datasets: [
         {
-          type: 'box',
-          layout: 'horizontal',
-          contents: [
-            { type: 'text', text: c.category, size: 'xs', color: COLOR_CHARCOAL, flex: 3 },
-            {
-              type: 'text',
-              text: `${c.total} 元`,
-              size: 'xs',
-              color: COLOR_BROWN_SOFT,
-              align: 'end',
-              flex: 2,
-            },
-          ],
-        },
-        {
-          type: 'box',
-          layout: 'horizontal',
-          height: '8px',
-          contents: [
-            { type: 'box', layout: 'vertical', backgroundColor: COLOR_BROWN, flex: barFlex, contents: [] },
-            ...(spacerFlex > 0
-              ? [{ type: 'box', layout: 'vertical', backgroundColor: COLOR_LINE, flex: spacerFlex, contents: [] }]
-              : []),
-          ],
+          data: items.map((c) => c.total),
+          backgroundColor: items.map((_, i) => PIE_COLORS[i % PIE_COLORS.length]),
+          borderColor: COLOR_BG,
+          borderWidth: 3,
         },
       ],
-    };
-  });
+    },
+    options: {
+      plugins: {
+        legend: {
+          position: 'right',
+          labels: { color: COLOR_CHARCOAL, font: { size: 13 } },
+        },
+      },
+    },
+  };
+
+  const encoded = encodeURIComponent(JSON.stringify(chartConfig));
+  return `https://quickchart.io/chart?c=${encoded}&backgroundColor=${encodeURIComponent(COLOR_BG)}&width=600&height=340&version=3`;
 }
 
 // ===== 存錢目標進度條 =====
@@ -216,6 +201,8 @@ function buildGoalProgress(goal, net) {
 
 // ===== 每月財報卡片 =====
 function buildMonthlyReportCard({ monthLabel, totalIncome, totalExpense, net, byCategory, goal, highlight, advice }) {
+  const chartUrl = buildCategoryPieChartUrl(byCategory);
+
   return {
     type: 'flex',
     altText: `${monthLabel} 財務報告：收入 ${totalIncome} / 支出 ${totalExpense} / 結餘 ${net}`,
@@ -243,6 +230,18 @@ function buildMonthlyReportCard({ monthLabel, totalIncome, totalExpense, net, by
           },
         ],
       },
+      ...(chartUrl
+        ? {
+            hero: {
+              type: 'image',
+              url: chartUrl,
+              size: 'full',
+              aspectRatio: '20:11',
+              aspectMode: 'fit',
+              backgroundColor: COLOR_BG,
+            },
+          }
+        : {}),
       body: {
         type: 'box',
         layout: 'vertical',
@@ -289,12 +288,11 @@ function buildMonthlyReportCard({ monthLabel, totalIncome, totalExpense, net, by
           { type: 'separator', margin: 'lg', color: COLOR_LINE },
           {
             type: 'text',
-            text: '支出分類',
+            text: '支出分類佔比',
             size: 'sm',
             color: COLOR_BROWN_SOFT,
             margin: 'lg',
           },
-          ...buildBarRows(byCategory),
           ...buildGoalProgress(goal, net),
           { type: 'separator', margin: 'lg', color: COLOR_LINE },
           {
