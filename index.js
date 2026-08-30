@@ -112,7 +112,17 @@ async function handleEvent(event) {
       monthNet,
     });
 
-    return client.replyMessage(event.replyToken, card);
+    try {
+      return await client.replyMessage(event.replyToken, card);
+    } catch (err) {
+      // Flex Message 格式若有問題，至少退而求其次回一句純文字，不要完全沒反應
+      console.error('Flex 卡片回覆失敗，改用純文字:', err.originalError?.response?.data || err.message || err);
+      const netText = monthNet !== null ? `\n本月結餘：${monthNet >= 0 ? '+' : ''}${monthNet} 元` : '';
+      return client.replyMessage(event.replyToken, {
+        type: 'text',
+        text: `${type === 'income' ? '💰' : '🧾'} ${result.category || '其他'} ${Math.abs(result.amount)} 元\n${result.dog_reply}${netText}`,
+      });
+    }
   }
 
   return client.replyMessage(event.replyToken, {
