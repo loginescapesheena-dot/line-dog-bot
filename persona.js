@@ -52,10 +52,21 @@ ${recentContext ? `使用者最近的記帳紀錄（供參考語氣，不用複�
 只回傳以下 JSON 格式，不要有任何其他文字、不要加 markdown 程式碼框：
 {"is_record": true or false, "category": "字串或null", "amount": 數字或null, "type": "income或expense或null", "note": "字串或null", "dog_reply": "小狗的回覆文字"}`;
 
-  const result = await model.generateContent(prompt);
-  const rawText = result.response.text().trim();
-
-  return parseJsonSafely(rawText);
+  try {
+    const result = await model.generateContent(prompt);
+    const rawText = result.response.text().trim();
+    return parseJsonSafely(rawText);
+  } catch (err) {
+    console.error('Gemini API 呼叫失敗:', err.message || err);
+    return {
+      is_record: false,
+      category: null,
+      amount: null,
+      type: null,
+      note: null,
+      dog_reply: '汪...我剛剛好像斷線恍神了，可以再跟我說一次嗎？',
+    };
+  }
 }
 
 // ===== 產生每月財務報告文案 =====
@@ -81,8 +92,13 @@ ${monthLabel} 記帳統計：
 各分類支出：
 ${categoryLines || '（本月無支出紀錄）'}`;
 
-  const result = await model.generateContent(prompt);
-  return result.response.text().trim();
+  try {
+    const result = await model.generateContent(prompt);
+    return result.response.text().trim();
+  } catch (err) {
+    console.error('Gemini API 呼叫失敗（月報）:', err.message || err);
+    return `汪！這個月的報告本來要出爐，但我剛好斷線了一下 🐶\n先簡單跟你說：收入 ${summary.totalIncome} 元、支出 ${summary.totalExpense} 元、結餘 ${summary.net} 元。詳細吐槽下次再補給你！`;
+  }
 }
 
 function parseJsonSafely(text) {
