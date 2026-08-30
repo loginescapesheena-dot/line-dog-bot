@@ -69,20 +69,25 @@ ${recentContext ? `使用者最近的記帳紀錄（供參考語氣，不用複�
   }
 }
 
-// ===== 產生每月財務報告文案 =====
-async function generateMonthlyReport(summary, monthLabel) {
+// ===== 產生每月財務報告文案（結構化：重點摘要 + 建議）=====
+async function generateMonthlyReport(summary, monthLabel, goalInfo = null) {
   const { totalIncome, totalExpense, net, byCategory, recordCount } = summary;
 
   const categoryLines = byCategory
     .map((c) => `${c.category}: ${c.total} 元`)
     .join('\n');
 
+  const goalLine = goalInfo
+    ? `\n這個月的存錢目標：${goalInfo.goal} 元，實際結餘 ${net} 元，${
+        net >= goalInfo.goal ? '已經達標' : `還差 ${goalInfo.goal - net} 元`
+      }。`
+    : '';
+
   const prompt = `${DOG_PERSONA}
 
-你的任務：根據以下的月度記帳統計數據，用小狗的個性寫一篇簡短的月報（大約 5-8 句話），
-包含：這個月收支概況（收入、支出、結餘都要提到）、花最多的分類、一句對這個月花錢習慣的幽默吐槽或稱讚、結尾一句鼓勵或提醒的話。
-不要用制式的財報格式，要像小狗在跟主人聊天一樣自然。可以適度使用 emoji 但不要過量。
-直接輸出報告文字本身，不要加任何說明或前言。
+你的任務：根據以下的月度記帳統計數據，用小狗的個性寫兩段話：
+1. highlight：這個月收支概況的重點摘要（收入、支出、結餘、花最多的分類），大約 2-3 句話，可以帶一點吐槽或稱讚。
+2. advice：針對這個月的花錢習慣，給一句具體、實用的建議或鼓勵（不要說教，要像朋友給的小提醒），大約 1-2 句話。如果有設定存錢目標，advice 要提到目標達成狀況。
 
 ${monthLabel} 記帳統計：
 總收入：${totalIncome} 元
@@ -90,14 +95,38 @@ ${monthLabel} 記帳統計：
 結餘：${net} 元
 記帳筆數：${recordCount} 筆
 各分類支出：
-${categoryLines || '（本月無支出紀錄）'}`;
+${categoryLines || '（本月無支出紀錄）'}${goalLine}
+
+只回傳以下 JSON 格式，不要有任何其他文字、不要加 markdown 程式碼框：
+{"highlight": "字串", "advice": "字串"}`;
 
   try {
     const result = await model.generateContent(prompt);
-    return result.response.text().trim();
+    const rawText = result.response.text().trim();
+    const parsed = parseReportJsonSafely(rawText, summary);
+    return parsed;
   } catch (err) {
     console.error('Gemini API 呼叫失敗（月報）:', err.message || err);
-    return `汪！這個月的報告本來要出爐，但我剛好斷線了一下 🐶\n先簡單跟你說：收入 ${summary.totalIncome} 元、支出 ${summary.totalExpense} 元、結餘 ${summary.net} 元。詳細吐槽下次再補給你！`;
+    return {
+      highlight: `這個月收入 ${totalIncome} 元、支出 ${totalExpense} 元、結餘 ${net} 元，我剛好斷線恍神了一下，詳細吐槽下次再補給你 🐶`,
+      advice: '斷線期間先繼續加油記帳，我等等就恢復了！',
+    };
+  }
+}
+
+function parseReportJsonSafely(text, summary) {
+  let cleaned = text.trim();
+  cleaned = cleaned.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '');
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (!parsed.highlight || !parsed.advice) throw new Error('缺少必要欄位');
+    return parsed;
+  } catch (err) {
+    console.error('月報 JSON parse failed:', text);
+    return {
+      highlight: `這個月收入 ${summary.totalIncome} 元、支出 ${summary.totalExpense} 元、結餘 ${summary.net} 元。`,
+      advice: '記得持續記帳，才能掌握花錢習慣喔！',
+    };
   }
 }
 
