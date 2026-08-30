@@ -21,7 +21,6 @@ function buildRecordConfirmCard({ type, category, amount, note, dogReply, monthN
       type: 'bubble',
       styles: {
         body: { backgroundColor: COLOR_BG },
-        footer: { backgroundColor: COLOR_BG },
       },
       header: {
         type: 'box',
@@ -35,7 +34,6 @@ function buildRecordConfirmCard({ type, category, amount, note, dogReply, monthN
             text: headerSub,
             size: 'xs',
             color: COLOR_BROWN_SOFT,
-            letterSpacing: '2px',
           },
           {
             type: 'text',
