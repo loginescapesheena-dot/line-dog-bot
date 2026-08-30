@@ -110,6 +110,27 @@ async function clearUserState(userId) {
   if (error) throw error;
 }
 
+// ===== 存錢目標 =====
+async function setUserGoal(userId, monthlyGoal) {
+  const { error } = await supabase
+    .from('user_goals')
+    .upsert(
+      { user_id: userId, monthly_goal: monthlyGoal, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id' }
+    );
+  if (error) throw error;
+}
+
+async function getUserGoal(userId) {
+  const { data, error } = await supabase
+    .from('user_goals')
+    .select('monthly_goal')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? Number(data.monthly_goal) : null;
+}
+
 module.exports = {
   upsertUser,
   insertRecord,
@@ -119,4 +140,6 @@ module.exports = {
   setUserState,
   getUserState,
   clearUserState,
+  setUserGoal,
+  getUserGoal,
 };
