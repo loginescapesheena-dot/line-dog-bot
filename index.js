@@ -10,7 +10,7 @@ const path = require('path');
 
 const db = require('./db');
 const { processMessage, generateMonthlyReport } = require('./persona');
-const { buildRecordConfirmCard } = require('./flexMessages');
+const { buildRecordConfirmCard, buildMonthlyReportCard } = require('./flexMessages');
 const { richMenuObject } = require('./richmenu');
 
 const config = {
@@ -65,8 +65,27 @@ async function handleEvent(event) {
 
   await db.upsertUser(userId, '');
 
-  // 檢查是否處於「等待輸入」狀態（剛點過 Rich Menu 的支出/收入按鈕）
+  // 檢查是否處於「等待輸入」狀態（剛點過 Rich Menu 的按鈕）
   const currentState = await db.getUserState(userId);
+
+  // 目標金額設定流程優先處理，不走記帳解析邏輯
+  if (currentState === 'awaiting_goal_input') {
+    await db.clearUserState(userId);
+    const match = userText.match(/(\d+(?:\.\d+)?)/);
+    if (!match) {
+      return client.replyMessage(event.replyToken, {
+        type: 'text',
+        text: '汪？沒看懂金額，麻煩直接打數字就好，例如：5000',
+      });
+    }
+    const goal = parseFloat(match[1]);
+    await db.setUserGoal(userId, goal);
+    return client.replyMessage(event.replyToken, {
+      type: 'text',
+      text: `收到！這個月的存錢目標設定為 ${goal} 元，我會幫你盯緊一點 🐶`,
+    });
+  }
+
   let forcedType = null;
   if (currentState === 'awaiting_expense_input') forcedType = 'expense';
   if (currentState === 'awaiting_income_input') forcedType = 'income';
@@ -155,17 +174,25 @@ async function handlePostback(event, userId) {
 
   if (action === 'query_month') {
     const summary = await db.getMonthSummary(userId, 0);
+    const goal = await db.getUserGoal(userId);
     const lines = summary.byCategory.map((c) => `${c.category}: ${c.total} 元`).join('\n');
+    let goalText = '';
+    if (goal) {
+      const achieved = summary.net >= goal;
+      const pct = Math.max(0, Math.min(100, Math.round((summary.net / goal) * 100)));
+      goalText = `\n\n存錢目標：${goal} 元\n${achieved ? '已經達成 🎉' : `目前進度 ${pct}%，還差 ${goal - summary.net} 元`}`;
+    }
     const text = `本月目前狀況：\n收入：${summary.totalIncome} 元\n支出：${summary.totalExpense} 元\n結餘：${summary.net} 元${
       lines ? `\n\n支出分類：\n${lines}` : ''
-    }`;
+    }${goalText}`;
     return client.replyMessage(event.replyToken, { type: 'text', text });
   }
 
   if (action === 'settings') {
+    await db.setUserState(userId, 'awaiting_goal_input');
     return client.replyMessage(event.replyToken, {
       type: 'text',
-      text: '設定功能還在努力開發中，之後會加入預算提醒之類的功能，敬請期待汪 🐶',
+      text: '汪！要幫你設定這個月的存錢目標嗎？\n直接輸入金額就好，例如：5000',
     });
   }
 
@@ -176,25 +203,50 @@ async function handlePostback(event, userId) {
 }
 
 // ===== 每月報告觸發端點 =====
+// monthOffset query 參數可用來測試：-1（預設，抓上個月）｜ 0（測試用，抓這個月目前資料）
 app.get('/trigger-monthly-report', async (req, res) => {
   if (req.query.secret !== process.env.CRON_SECRET) {
     return res.status(403).send('Forbidden');
   }
 
+  const monthOffset = req.query.monthOffset !== undefined ? parseInt(req.query.monthOffset, 10) : -1;
   res.status(200).send('Monthly report job started');
 
   console.log('開始發送每月財務報告...');
   const userIds = await db.getAllUserIds();
   const now = new Date();
-  const monthLabel = `${now.getFullYear()}年${now.getMonth()}月`;
+  const targetDate = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  const monthLabel = `${targetDate.getFullYear()}年${targetDate.getMonth() + 1}月`;
 
   for (const userId of userIds) {
     try {
-      const summary = await db.getMonthSummary(userId, -1);
+      const summary = await db.getMonthSummary(userId, monthOffset);
       if (summary.recordCount === 0) continue;
 
-      const reportText = await generateMonthlyReport(summary, monthLabel);
-      await client.pushMessage(userId, { type: 'text', text: reportText });
+      const goal = await db.getUserGoal(userId);
+      const goalInfo = goal ? { goal } : null;
+      const report = await generateMonthlyReport(summary, monthLabel, goalInfo);
+
+      const card = buildMonthlyReportCard({
+        monthLabel,
+        totalIncome: summary.totalIncome,
+        totalExpense: summary.totalExpense,
+        net: summary.net,
+        byCategory: summary.byCategory,
+        goal,
+        highlight: report.highlight,
+        advice: report.advice,
+      });
+
+      try {
+        await client.pushMessage(userId, card);
+      } catch (err) {
+        console.error(`Flex 月報卡片推播失敗，改用純文字給 ${userId}:`, err.originalError?.response?.data || err.message || err);
+        await client.pushMessage(userId, {
+          type: 'text',
+          text: `${monthLabel} 財務報告\n收入：${summary.totalIncome} 元\n支出：${summary.totalExpense} 元\n結餘：${summary.net} 元\n\n${report.highlight}\n\n🐶 ${report.advice}`,
+        });
+      }
     } catch (err) {
       console.error(`發送月報給 ${userId} 失敗:`, err);
     }
