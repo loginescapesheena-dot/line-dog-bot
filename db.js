@@ -16,10 +16,17 @@ async function upsertUser(userId, displayName) {
   if (error) throw error;
 }
 
-async function insertRecord({ userId, category, amount, type, note }) {
+async function insertRecord({ userId, category, amount, type, note, paymentMethod }) {
   const { data, error } = await supabase
     .from('records')
-    .insert({ user_id: userId, category, amount, type, note: note || '' })
+    .insert({
+      user_id: userId,
+      category,
+      amount,
+      type,
+      note: note || '',
+      payment_method: paymentMethod || 'cash',
+    })
     .select('id')
     .single();
   if (error) throw error;
@@ -131,6 +138,31 @@ async function getUserGoal(userId) {
   return data ? Number(data.monthly_goal) : null;
 }
 
+// ===== 信用卡待繳金額 =====
+async function getCardBalance(userId) {
+  const { data, error } = await supabase
+    .from('user_card_balance')
+    .select('balance')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? Number(data.balance) : 0;
+}
+
+// delta 為正數表示新增待繳（刷卡消費），負數表示還款扣減；結果不會低於 0
+async function adjustCardBalance(userId, delta) {
+  const current = await getCardBalance(userId);
+  const next = Math.max(0, current + delta);
+  const { error } = await supabase
+    .from('user_card_balance')
+    .upsert(
+      { user_id: userId, balance: next, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id' }
+    );
+  if (error) throw error;
+  return next;
+}
+
 module.exports = {
   upsertUser,
   insertRecord,
@@ -142,4 +174,6 @@ module.exports = {
   clearUserState,
   setUserGoal,
   getUserGoal,
+  getCardBalance,
+  adjustCardBalance,
 };
