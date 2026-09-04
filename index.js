@@ -10,7 +10,7 @@ const path = require('path');
 
 const db = require('./db');
 const { processMessage, generateMonthlyReport } = require('./persona');
-const { buildRecordConfirmCard, buildMonthlyReportCard } = require('./flexMessages');
+const { buildRecordConfirmCard, buildCardChargeCard, buildMonthlyReportCard } = require('./flexMessages');
 const { richMenuObject } = require('./richmenu');
 
 const config = {
@@ -47,7 +47,7 @@ async function handleEvent(event) {
 
     return client.replyMessage(event.replyToken, {
       type: 'text',
-      text: '汪！我是記帳小狗🐶\n可以直接打字跟我說，例如「晚餐 300」，\n也可以點下面選單的「支出」「收入」按鈕，我會引導你輸入！\n每個月1號我還會傳月報給你喔！',
+      text: '汪！我是記帳小狗🐶\n記帳最準確的方式：先點下面選單的「支出」或「收入」按鈕，我會引導你輸入項目跟金額！\n也可以直接打字跟我說，例如「晚餐 300」，我會盡量判斷。\n每個月1號我還會傳精緻月報給你喔！',
     });
   }
 
@@ -105,49 +105,119 @@ async function handleEvent(event) {
 
   if (result.is_record && result.amount) {
     const type = result.type === 'income' ? 'income' : 'expense';
+    const amount = Math.abs(result.amount);
+    const category = result.category || '其他';
+    const paymentMethod = result.payment_method === 'credit_card' ? 'credit_card' : 'cash';
+    const isCardPayment = type === 'expense' && result.is_card_payment === true;
+
+    // ===== 分支一：繳卡費（還款）—— 記一筆一般支出 + 扣減卡費待繳 =====
+    if (isCardPayment) {
+      await db.insertRecord({
+        userId,
+        category: '卡費',
+        amount,
+        type: 'expense',
+        note: result.note,
+        paymentMethod: 'cash',
+      });
+      const newBalance = await db.adjustCardBalance(userId, -amount);
+
+      let monthNet = null;
+      try {
+        monthNet = (await db.getMonthSummary(userId, 0)).net;
+      } catch (e) {
+        console.error('取得本月結餘失敗:', e);
+      }
+
+      const card = buildRecordConfirmCard({
+        type: 'expense',
+        category: '卡費',
+        amount,
+        note: result.note,
+        dogReply: result.dog_reply,
+        monthNet,
+        cardBalance: newBalance,
+      });
+      return replyCardWithFallback(event, card, 'expense', '卡費', amount, result.dog_reply, monthNet, newBalance);
+    }
+
+    // ===== 分支二：一般消費刷卡 —— 不計入當月一般支出，先累加進卡費待繳 =====
+    if (type === 'expense' && paymentMethod === 'credit_card') {
+      const newBalance = await db.adjustCardBalance(userId, amount);
+      const card = buildCardChargeCard({
+        category,
+        amount,
+        note: result.note,
+        dogReply: result.dog_reply,
+        cardBalance: newBalance,
+      });
+      try {
+        return await client.replyMessage(event.replyToken, card);
+      } catch (err) {
+        console.error('信用卡卡片回覆失敗，改用純文字:', err.originalError?.response?.data || err.message || err);
+        return client.replyMessage(event.replyToken, {
+          type: 'text',
+          text: `💳 ${category} ${amount} 元（刷卡，記入卡費）\n${result.dog_reply}\n目前信用卡待繳：${newBalance} 元`,
+        });
+      }
+    }
+
+    // ===== 分支三：一般現金收支 =====
     await db.insertRecord({
       userId,
-      category: result.category || '其他',
-      amount: Math.abs(result.amount),
+      category,
+      amount,
       type,
       note: result.note,
+      paymentMethod: 'cash',
     });
 
-    // 順便算一下本月結餘，顯示在確認卡片上
     let monthNet = null;
     try {
-      const monthSummary = await db.getMonthSummary(userId, 0);
-      monthNet = monthSummary.net;
+      monthNet = (await db.getMonthSummary(userId, 0)).net;
     } catch (e) {
       console.error('取得本月結餘失敗:', e);
     }
 
+    let cardBalance = null;
+    try {
+      cardBalance = await db.getCardBalance(userId);
+    } catch (e) {
+      console.error('取得卡費待繳失敗:', e);
+    }
+
     const card = buildRecordConfirmCard({
       type,
-      category: result.category || '其他',
-      amount: Math.abs(result.amount),
+      category,
+      amount,
       note: result.note,
       dogReply: result.dog_reply,
       monthNet,
+      cardBalance,
     });
 
-    try {
-      return await client.replyMessage(event.replyToken, card);
-    } catch (err) {
-      // Flex Message 格式若有問題，至少退而求其次回一句純文字，不要完全沒反應
-      console.error('Flex 卡片回覆失敗，改用純文字:', err.originalError?.response?.data || err.message || err);
-      const netText = monthNet !== null ? `\n本月結餘：${monthNet >= 0 ? '+' : ''}${monthNet} 元` : '';
-      return client.replyMessage(event.replyToken, {
-        type: 'text',
-        text: `${type === 'income' ? '💰' : '🧾'} ${result.category || '其他'} ${Math.abs(result.amount)} 元\n${result.dog_reply}${netText}`,
-      });
-    }
+    return replyCardWithFallback(event, card, type, category, amount, result.dog_reply, monthNet, cardBalance);
   }
 
   return client.replyMessage(event.replyToken, {
     type: 'text',
     text: result.dog_reply,
   });
+}
+
+// Flex 卡片回覆失敗時，退而求其次改用純文字，確保使用者不會完全沒反應
+async function replyCardWithFallback(event, card, type, category, amount, dogReply, monthNet, cardBalance) {
+  try {
+    return await client.replyMessage(event.replyToken, card);
+  } catch (err) {
+    console.error('Flex 卡片回覆失敗，改用純文字:', err.originalError?.response?.data || err.message || err);
+    const netText = monthNet !== null ? `\n本月結餘：${monthNet >= 0 ? '+' : ''}${monthNet} 元` : '';
+    const cardText = cardBalance !== null && cardBalance > 0 ? `\n💳 信用卡待繳：${cardBalance} 元` : '';
+    return client.replyMessage(event.replyToken, {
+      type: 'text',
+      text: `${type === 'income' ? '💰' : '🧾'} ${category} ${amount} 元\n${dogReply}${netText}${cardText}`,
+    });
+  }
 }
 
 async function handlePostback(event, userId) {
@@ -160,7 +230,7 @@ async function handlePostback(event, userId) {
     await db.setUserState(userId, 'awaiting_expense_input');
     return client.replyMessage(event.replyToken, {
       type: 'text',
-      text: '汪！請輸入支出項目與金額，\n例如：午餐 120、星巴克 150',
+      text: '汪！請輸入支出項目與金額，\n例如：午餐 120、星巴克 150\n如果是刷卡消費可以說「星巴克 150 刷卡」，我會先記到卡費待繳，不會算進這個月的一般支出喔！',
     });
   }
 
@@ -175,6 +245,7 @@ async function handlePostback(event, userId) {
   if (action === 'query_month') {
     const summary = await db.getMonthSummary(userId, 0);
     const goal = await db.getUserGoal(userId);
+    const cardBalance = await db.getCardBalance(userId);
     const lines = summary.byCategory.map((c) => `${c.category}: ${c.total} 元`).join('\n');
     let goalText = '';
     if (goal) {
@@ -182,9 +253,10 @@ async function handlePostback(event, userId) {
       const pct = Math.max(0, Math.min(100, Math.round((summary.net / goal) * 100)));
       goalText = `\n\n存錢目標：${goal} 元\n${achieved ? '已經達成 🎉' : `目前進度 ${pct}%，還差 ${goal - summary.net} 元`}`;
     }
+    const cardText = cardBalance > 0 ? `\n\n💳 信用卡待繳：${cardBalance} 元` : '';
     const text = `本月目前狀況：\n收入：${summary.totalIncome} 元\n支出：${summary.totalExpense} 元\n結餘：${summary.net} 元${
       lines ? `\n\n支出分類：\n${lines}` : ''
-    }${goalText}`;
+    }${goalText}${cardText}`;
     return client.replyMessage(event.replyToken, { type: 'text', text });
   }
 
@@ -225,6 +297,7 @@ app.get('/trigger-monthly-report', async (req, res) => {
 
       const goal = await db.getUserGoal(userId);
       const goalInfo = goal ? { goal } : null;
+      const cardBalance = await db.getCardBalance(userId);
       const report = await generateMonthlyReport(summary, monthLabel, goalInfo);
 
       const card = buildMonthlyReportCard({
@@ -236,6 +309,7 @@ app.get('/trigger-monthly-report', async (req, res) => {
         goal,
         highlight: report.highlight,
         advice: report.advice,
+        cardBalance,
       });
 
       try {
