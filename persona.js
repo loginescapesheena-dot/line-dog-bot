@@ -18,8 +18,24 @@ const DOG_PERSONA = `你是「記帳小狗」，一隻幫主人記帳的可愛�
 - 如果使用者只是閒聊、問問題、或打招呼，不要硬記帳，正常用小狗個性回應就好。
 - 絕對不要說教式地叫使用者少花錢，要用幽默化解，不要真的批評使用者的財務決定。`;
 
-const EXPENSE_CATEGORIES = ['餐飲', '交通', '娛樂', '購物', '居家', '醫療', '其他'];
+const EXPENSE_CATEGORIES = ['餐飲', '交通', '娛樂', '購物', '居家', '醫療', '卡費', '其他'];
 const INCOME_CATEGORIES = ['薪資', '獎金', '投資收益', '接案/兼職', '其他'];
+
+const PARSING_RULES = `
+金額解析規則：
+- 訊息中的金額可能用阿拉伯數字（120）、中文數字（一百二十）、K/k 代表千（13K＝13000）、萬/W/w 代表萬（1.5萬＝15000、2W＝20000），或千分位逗號（13,000＝13000），都要正確換算成純數字。
+
+分類歸類規則（同義詞/口語說法要歸到同一分類，範例僅供參考，不限於此）：
+- 醫療：看病、看醫生、看診、拿藥、掛號、藥局
+- 交通：加油、停車、捷運、公車、計程車、高鐵、機票、Uber
+- 餐飲：吃飯、聚餐、外送、飲料、咖啡
+- 薪資（收入）：薪水、工資、月薪
+- 投資收益（收入）：股息、配息、股票獲利
+
+信用卡付款判斷：
+- 如果訊息提到「刷卡」「信用卡」「刷」等字眼，payment_method 設為 "credit_card"；否則預設 "cash"。
+- 如果訊息是在「繳/還信用卡帳單」（例如「繳卡費」「還信用卡」「卡費繳了」「信用卡帳單」），這是一筆還款動作：category 固定設為 "卡費"，type 設為 "expense"，payment_method 設為 "cash"，並把 is_card_payment 設為 true。
+- 其餘一般消費（不論是否刷卡）is_card_payment 一律為 false。`;
 
 // ===== 呼叫 Gemini，讓它同時判斷「是否為記帳」+ 解析 + 生成小狗回覆 =====
 // forcedType: null（不限定，AI 自行判斷）｜ 'expense'（使用者剛點了 Rich Menu 的「支出」）｜ 'income'（點了「收入」）
@@ -43,6 +59,7 @@ ${forcedType === 'income' ? INCOME_CATEGORIES.join('、') : EXPENSE_CATEGORIES.j
 - amount 一律為正數，用 type 欄位標示 "income"（收入）或 "expense"（支出）。
 - 如果無法判斷出明確金額，is_record 設為 false。
 - dog_reply 一定要有內容，不管是不是記帳都要用小狗的個性回應這句話。
+${PARSING_RULES}
 ${forcedInstruction}
 
 ${recentContext ? `使用者最近的記帳紀錄（供參考語氣，不用複述）：\n${recentContext}\n` : ''}
@@ -50,7 +67,7 @@ ${recentContext ? `使用者最近的記帳紀錄（供參考語氣，不用複�
 使用者訊息：「${userText}」
 
 只回傳以下 JSON 格式，不要有任何其他文字、不要加 markdown 程式碼框：
-{"is_record": true or false, "category": "字串或null", "amount": 數字或null, "type": "income或expense或null", "note": "字串或null", "dog_reply": "小狗的回覆文字"}`;
+{"is_record": true or false, "category": "字串或null", "amount": 數字或null, "type": "income或expense或null", "note": "字串或null", "payment_method": "cash或credit_card", "is_card_payment": true or false, "dog_reply": "小狗的回覆文字"}`;
 
   try {
     const result = await model.generateContent(prompt);
@@ -64,6 +81,8 @@ ${recentContext ? `使用者最近的記帳紀錄（供參考語氣，不用複�
       amount: null,
       type: null,
       note: null,
+      payment_method: 'cash',
+      is_card_payment: false,
       dog_reply: '汪...我剛剛好像斷線恍神了，可以再跟我說一次嗎？',
     };
   }
@@ -143,6 +162,8 @@ function parseJsonSafely(text) {
       amount: null,
       type: null,
       note: null,
+      payment_method: 'cash',
+      is_card_payment: false,
       dog_reply: '汪？我剛剛好像放空了一下，可以再說一次嗎？',
     };
   }
