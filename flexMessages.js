@@ -8,7 +8,7 @@ const COLOR_BROWN_SOFT = '#8B6B54';
 const COLOR_CHARCOAL = '#3A322C';
 const COLOR_LINE = '#DCD2C6';
 
-function buildRecordConfirmCard({ type, category, amount, note, dogReply, monthNet }) {
+function buildRecordConfirmCard({ type, category, amount, note, dogReply, monthNet, cardBalance }) {
   const isIncome = type === 'income';
   const headerText = isIncome ? '收入記錄' : '支出記錄';
   const headerSub = isIncome ? 'INCOME' : 'EXPENSE';
@@ -101,6 +101,102 @@ function buildRecordConfirmCard({ type, category, amount, note, dogReply, monthN
                 },
               ]
             : []),
+          ...(cardBalance !== undefined && cardBalance !== null && cardBalance > 0
+            ? [
+                {
+                  type: 'text',
+                  text: `💳 信用卡待繳　${cardBalance} 元`,
+                  size: 'xs',
+                  color: COLOR_BROWN_SOFT,
+                  margin: 'xs',
+                },
+              ]
+            : []),
+        ],
+      },
+    },
+  };
+}
+
+// ===== 信用卡消費卡片（未計入當月一般支出，先記到卡費待繳）=====
+function buildCardChargeCard({ category, amount, note, dogReply, cardBalance }) {
+  return {
+    type: 'flex',
+    altText: `信用卡消費：${category} ${amount} 元，目前卡費待繳 ${cardBalance} 元`,
+    contents: {
+      type: 'bubble',
+      styles: {
+        body: { backgroundColor: COLOR_BG },
+      },
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: COLOR_BG,
+        paddingAll: 'lg',
+        paddingBottom: 'none',
+        contents: [
+          { type: 'text', text: 'CREDIT CARD', size: 'xs', color: COLOR_BROWN_SOFT },
+          {
+            type: 'text',
+            text: '💳 信用卡消費',
+            color: COLOR_CHARCOAL,
+            weight: 'bold',
+            size: 'xl',
+            margin: 'xs',
+          },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        paddingAll: 'lg',
+        backgroundColor: COLOR_BG,
+        contents: [
+          { type: 'text', text: `－ ${amount}`, size: '3xl', weight: 'bold', color: COLOR_BROWN },
+          { type: 'separator', margin: 'md', color: COLOR_LINE },
+          {
+            type: 'box',
+            layout: 'baseline',
+            margin: 'md',
+            contents: [
+              { type: 'text', text: '分類', size: 'sm', color: COLOR_BROWN_SOFT, flex: 2 },
+              { type: 'text', text: category, size: 'md', flex: 5, wrap: true, color: COLOR_CHARCOAL },
+            ],
+          },
+          ...(note
+            ? [
+                {
+                  type: 'box',
+                  layout: 'baseline',
+                  contents: [
+                    { type: 'text', text: '備註', size: 'sm', color: COLOR_BROWN_SOFT, flex: 2 },
+                    { type: 'text', text: note, size: 'sm', flex: 5, wrap: true, color: COLOR_CHARCOAL },
+                  ],
+                },
+              ]
+            : []),
+          { type: 'separator', margin: 'md', color: COLOR_LINE },
+          { type: 'text', text: dogReply, size: 'sm', wrap: true, margin: 'md', color: COLOR_CHARCOAL },
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'md',
+            backgroundColor: '#EDE4D8',
+            cornerRadius: 'md',
+            paddingAll: 'md',
+            contents: [
+              { type: 'text', text: '這筆先不算進本月一般支出，等你繳卡費時才會入帳', size: 'xxs', color: COLOR_BROWN_SOFT, wrap: true },
+              {
+                type: 'text',
+                text: `目前信用卡待繳：${cardBalance} 元`,
+                size: 'sm',
+                weight: 'bold',
+                color: COLOR_BROWN,
+                margin: 'xs',
+              },
+            ],
+          },
         ],
       },
     },
@@ -200,7 +296,7 @@ function buildGoalProgress(goal, net) {
 }
 
 // ===== 每月財報卡片 =====
-function buildMonthlyReportCard({ monthLabel, totalIncome, totalExpense, net, byCategory, goal, highlight, advice }) {
+function buildMonthlyReportCard({ monthLabel, totalIncome, totalExpense, net, byCategory, goal, highlight, advice, cardBalance }) {
   const chartUrl = buildCategoryPieChartUrl(byCategory);
 
   return {
@@ -294,6 +390,28 @@ function buildMonthlyReportCard({ monthLabel, totalIncome, totalExpense, net, by
             margin: 'lg',
           },
           ...buildGoalProgress(goal, net),
+          ...(cardBalance && cardBalance > 0
+            ? [
+                { type: 'separator', margin: 'lg', color: COLOR_LINE },
+                {
+                  type: 'box',
+                  layout: 'horizontal',
+                  margin: 'lg',
+                  contents: [
+                    { type: 'text', text: '💳 信用卡待繳', size: 'sm', color: COLOR_BROWN_SOFT, flex: 3 },
+                    {
+                      type: 'text',
+                      text: `${cardBalance} 元`,
+                      size: 'sm',
+                      weight: 'bold',
+                      color: COLOR_BROWN,
+                      align: 'end',
+                      flex: 2,
+                    },
+                  ],
+                },
+              ]
+            : []),
           { type: 'separator', margin: 'lg', color: COLOR_LINE },
           {
             type: 'text',
@@ -321,4 +439,4 @@ function buildMonthlyReportCard({ monthLabel, totalIncome, totalExpense, net, by
   };
 }
 
-module.exports = { buildRecordConfirmCard, buildMonthlyReportCard };
+module.exports = { buildRecordConfirmCard, buildCardChargeCard, buildMonthlyReportCard };
