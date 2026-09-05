@@ -163,6 +163,90 @@ async function adjustCardBalance(userId, delta) {
   return next;
 }
 
+// ===== 個人化設定：卡費繳款提醒日、月報推送日 =====
+async function getUserSettings(userId) {
+  const { data, error } = await supabase
+    .from('user_settings')
+    .select('report_day, card_due_day')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) throw error;
+  return {
+    reportDay: data && data.report_day ? data.report_day : 1,
+    cardDueDay: data ? data.card_due_day : null,
+  };
+}
+
+async function setReportDay(userId, day) {
+  const { error } = await supabase
+    .from('user_settings')
+    .upsert(
+      { user_id: userId, report_day: day, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id' }
+    );
+  if (error) throw error;
+}
+
+async function setCardDueDay(userId, day) {
+  const { error } = await supabase
+    .from('user_settings')
+    .upsert(
+      { user_id: userId, card_due_day: day, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id' }
+    );
+  if (error) throw error;
+}
+
+// ===== 信用卡分期 =====
+async function insertInstallment({ userId, category, note, totalAmount, monthlyAmount, totalPeriods, remainingPeriods, lastBilledMonth }) {
+  const { error } = await supabase.from('installments').insert({
+    user_id: userId,
+    category,
+    note: note || '',
+    total_amount: totalAmount,
+    monthly_amount: monthlyAmount,
+    total_periods: totalPeriods,
+    remaining_periods: remainingPeriods,
+    last_billed_month: lastBilledMonth,
+  });
+  if (error) throw error;
+}
+
+// 找出「這個月還沒扣款」且「還有剩餘期數」的所有分期（跨所有使用者，供每月自動扣款排程用）
+async function getDueInstallments(currentMonthStr) {
+  const { data, error } = await supabase
+    .from('installments')
+    .select('id, user_id, category, monthly_amount, remaining_periods, total_periods')
+    .gt('remaining_periods', 0)
+    .neq('last_billed_month', currentMonthStr);
+  if (error) throw error;
+  return data;
+}
+
+async function billInstallment(installmentId, currentMonthStr) {
+  const { data: current, error: readErr } = await supabase
+    .from('installments')
+    .select('remaining_periods')
+    .eq('id', installmentId)
+    .single();
+  if (readErr) throw readErr;
+
+  const { error: updateErr } = await supabase
+    .from('installments')
+    .update({ remaining_periods: current.remaining_periods - 1, last_billed_month: currentMonthStr })
+    .eq('id', installmentId);
+  if (updateErr) throw updateErr;
+}
+
+// ===== 重置：清空一個使用者的所有記帳相關資料（不移除 users 名單本身）=====
+async function resetUserData(userId) {
+  const tables = ['records', 'installments', 'user_goals', 'user_card_balance', 'user_settings'];
+  for (const table of tables) {
+    const { error } = await supabase.from(table).delete().eq('user_id', userId);
+    if (error) throw error;
+  }
+}
+
 module.exports = {
   upsertUser,
   insertRecord,
@@ -176,4 +260,11 @@ module.exports = {
   getUserGoal,
   getCardBalance,
   adjustCardBalance,
+  getUserSettings,
+  setReportDay,
+  setCardDueDay,
+  insertInstallment,
+  getDueInstallments,
+  billInstallment,
+  resetUserData,
 };
