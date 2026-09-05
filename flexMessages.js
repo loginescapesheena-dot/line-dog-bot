@@ -8,7 +8,7 @@ const COLOR_BROWN_SOFT = '#8B6B54';
 const COLOR_CHARCOAL = '#3A322C';
 const COLOR_LINE = '#DCD2C6';
 
-function buildRecordConfirmCard({ type, category, amount, note, dogReply, monthNet, cardBalance }) {
+function buildRecordConfirmCard({ type, category, amount, note, dogReply, monthNet, cardBalance, categoryBudget }) {
   const isIncome = type === 'income';
   const headerText = isIncome ? '收入記錄' : '支出記錄';
   const headerSub = isIncome ? 'INCOME' : 'EXPENSE';
@@ -109,6 +109,24 @@ function buildRecordConfirmCard({ type, category, amount, note, dogReply, monthN
                   size: 'xs',
                   color: COLOR_BROWN_SOFT,
                   margin: 'xs',
+                },
+              ]
+            : []),
+          ...(categoryBudget
+            ? [
+                {
+                  type: 'box',
+                  layout: 'vertical',
+                  margin: 'sm',
+                  contents: [
+                    {
+                      type: 'text',
+                      text: `${categoryBudget.over ? '⚠️ ' : ''}${category}預算　${categoryBudget.spent}／${categoryBudget.limit} 元`,
+                      size: 'xs',
+                      color: categoryBudget.over ? COLOR_BROWN : COLOR_BROWN_SOFT,
+                      weight: categoryBudget.over ? 'bold' : 'regular',
+                    },
+                  ],
                 },
               ]
             : []),
