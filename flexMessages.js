@@ -203,6 +203,105 @@ function buildCardChargeCard({ category, amount, note, dogReply, cardBalance }) 
   };
 }
 
+// ===== 信用卡分期卡片（設定一次，之後每月自動扣款）=====
+function buildInstallmentCard({ category, totalAmount, monthlyAmount, totalPeriods, note, dogReply, cardBalance }) {
+  return {
+    type: 'flex',
+    altText: `分期消費：${category} 共 ${totalAmount} 元，分 ${totalPeriods} 期，每期 ${monthlyAmount} 元`,
+    contents: {
+      type: 'bubble',
+      styles: {
+        body: { backgroundColor: COLOR_BG },
+      },
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: COLOR_BG,
+        paddingAll: 'lg',
+        paddingBottom: 'none',
+        contents: [
+          { type: 'text', text: 'INSTALLMENT', size: 'xs', color: COLOR_BROWN_SOFT },
+          {
+            type: 'text',
+            text: '📅 分期消費',
+            color: COLOR_CHARCOAL,
+            weight: 'bold',
+            size: 'xl',
+            margin: 'xs',
+          },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        paddingAll: 'lg',
+        backgroundColor: COLOR_BG,
+        contents: [
+          { type: 'text', text: `總額 ${totalAmount}`, size: '3xl', weight: 'bold', color: COLOR_BROWN },
+          { type: 'separator', margin: 'md', color: COLOR_LINE },
+          {
+            type: 'box',
+            layout: 'baseline',
+            margin: 'md',
+            contents: [
+              { type: 'text', text: '分類', size: 'sm', color: COLOR_BROWN_SOFT, flex: 2 },
+              { type: 'text', text: category, size: 'md', flex: 5, wrap: true, color: COLOR_CHARCOAL },
+            ],
+          },
+          {
+            type: 'box',
+            layout: 'baseline',
+            contents: [
+              { type: 'text', text: '分期', size: 'sm', color: COLOR_BROWN_SOFT, flex: 2 },
+              { type: 'text', text: `共 ${totalPeriods} 期，每期 ${monthlyAmount} 元`, size: 'sm', flex: 5, wrap: true, color: COLOR_CHARCOAL },
+            ],
+          },
+          ...(note
+            ? [
+                {
+                  type: 'box',
+                  layout: 'baseline',
+                  contents: [
+                    { type: 'text', text: '備註', size: 'sm', color: COLOR_BROWN_SOFT, flex: 2 },
+                    { type: 'text', text: note, size: 'sm', flex: 5, wrap: true, color: COLOR_CHARCOAL },
+                  ],
+                },
+              ]
+            : []),
+          { type: 'separator', margin: 'md', color: COLOR_LINE },
+          { type: 'text', text: dogReply, size: 'sm', wrap: true, margin: 'md', color: COLOR_CHARCOAL },
+          {
+            type: 'box',
+            layout: 'vertical',
+            margin: 'md',
+            backgroundColor: '#EDE4D8',
+            cornerRadius: 'md',
+            paddingAll: 'md',
+            contents: [
+              {
+                type: 'text',
+                text: `之後每個月 1 號會自動幫你加 ${monthlyAmount} 元到卡費，共 ${totalPeriods} 期，不用再手動輸入`,
+                size: 'xxs',
+                color: COLOR_BROWN_SOFT,
+                wrap: true,
+              },
+              {
+                type: 'text',
+                text: `目前信用卡待繳：${cardBalance} 元`,
+                size: 'sm',
+                weight: 'bold',
+                color: COLOR_BROWN,
+                margin: 'xs',
+              },
+            ],
+          },
+        ],
+      },
+    },
+  };
+}
+
 // ===== 用 QuickChart（免費圖表服務）產生圓餅圖圖片網址 =====
 const PIE_COLORS = ['#6B4A34', '#A98F76', '#3A322C', '#C9BBAF', '#8B6B54', '#D9CBB8', '#4A3728'];
 
@@ -439,4 +538,4 @@ function buildMonthlyReportCard({ monthLabel, totalIncome, totalExpense, net, by
   };
 }
 
-module.exports = { buildRecordConfirmCard, buildCardChargeCard, buildMonthlyReportCard };
+module.exports = { buildRecordConfirmCard, buildCardChargeCard, buildInstallmentCard, buildMonthlyReportCard };
