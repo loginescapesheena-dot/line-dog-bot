@@ -9,9 +9,12 @@ const fs = require('fs');
 const path = require('path');
 
 const db = require('./db');
-const { processMessage, generateMonthlyReport } = require('./persona');
+const { processMessage, generateMonthlyReport, EXPENSE_CATEGORIES } = require('./persona');
 const { buildRecordConfirmCard, buildCardChargeCard, buildInstallmentCard, buildMonthlyReportCard } = require('./flexMessages');
 const { richMenuObject } = require('./richmenu');
+
+// 可以設定預算的分類（排除「卡費」，那是內部用的還款分類，不適合設預算）
+const BUDGETABLE_CATEGORIES = EXPENSE_CATEGORIES.filter((c) => c !== '卡費');
 
 const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
@@ -64,6 +67,12 @@ async function handleEvent(event) {
   const userText = event.message.text.trim();
 
   await db.upsertUser(userId, '');
+
+  // 「查詢卡費」是固定指令，直接處理不用麻煩 Gemini
+  if (userText === '查詢卡費') {
+    await db.clearUserState(userId);
+    return client.replyMessage(event.replyToken, { type: 'text', text: await buildCardDetailText(userId) });
+  }
 
   // 檢查是否處於「等待輸入」狀態（剛點過 Rich Menu 的按鈕）
   const currentState = await db.getUserState(userId);
@@ -141,6 +150,42 @@ async function handleEvent(event) {
     return client.replyMessage(event.replyToken, {
       type: 'text',
       text: '好，取消重置，資料都還在，別擔心 🐶',
+    });
+  }
+
+  // 分類預算設定 —— 步驟一：選分類
+  if (currentState === 'awaiting_budget_category') {
+    const category = BUDGETABLE_CATEGORIES.find((c) => userText.includes(c));
+    if (!category) {
+      return client.replyMessage(event.replyToken, {
+        type: 'text',
+        text: '汪？請從按鈕選一個分類，或直接輸入分類名稱，例如：餐飲',
+        quickReply: buildBudgetCategoryQuickReply(),
+      });
+    }
+    await db.setUserState(userId, `awaiting_budget_amount_input:${category}`);
+    return client.replyMessage(event.replyToken, {
+      type: 'text',
+      text: `汪！「${category}」這個月的預算上限要設多少？直接輸入金額就好，例如：5000`,
+    });
+  }
+
+  // 分類預算設定 —— 步驟二：輸入金額
+  if (currentState && currentState.startsWith('awaiting_budget_amount_input:')) {
+    await db.clearUserState(userId);
+    const category = currentState.split(':')[1];
+    const match = userText.match(/(\d+(?:\.\d+)?)/);
+    if (!match) {
+      return client.replyMessage(event.replyToken, {
+        type: 'text',
+        text: '汪？沒看懂金額，麻煩直接打數字就好，例如：5000',
+      });
+    }
+    const limit = parseFloat(match[1]);
+    await db.setCategoryBudget(userId, category, limit);
+    return client.replyMessage(event.replyToken, {
+      type: 'text',
+      text: `收到！「${category}」這個月預算上限設定為 ${limit} 元，超過我會在記帳時提醒你 🐶`,
     });
   }
 
@@ -269,8 +314,11 @@ async function handleEvent(event) {
     });
 
     let monthNet = null;
+    let monthByCategory = [];
     try {
-      monthNet = (await db.getMonthSummary(userId, 0)).net;
+      const monthSummary = await db.getMonthSummary(userId, 0);
+      monthNet = monthSummary.net;
+      monthByCategory = monthSummary.byCategory;
     } catch (e) {
       console.error('取得本月結餘失敗:', e);
     }
@@ -282,6 +330,20 @@ async function handleEvent(event) {
       console.error('取得卡費待繳失敗:', e);
     }
 
+    // 檢查分類預算上限（只針對支出）
+    let categoryBudget = null;
+    if (type === 'expense') {
+      try {
+        const limit = await db.getCategoryBudget(userId, category);
+        if (limit) {
+          const spent = monthByCategory.find((c) => c.category === category)?.total || 0;
+          categoryBudget = { limit, spent, over: spent > limit };
+        }
+      } catch (e) {
+        console.error('取得分類預算失敗:', e);
+      }
+    }
+
     const card = buildRecordConfirmCard({
       type,
       category,
@@ -290,9 +352,10 @@ async function handleEvent(event) {
       dogReply: result.dog_reply,
       monthNet,
       cardBalance,
+      categoryBudget,
     });
 
-    return replyCardWithFallback(event, card, type, category, amount, result.dog_reply, monthNet, cardBalance);
+    return replyCardWithFallback(event, card, type, category, amount, result.dog_reply, monthNet, cardBalance, categoryBudget);
   }
 
   return client.replyMessage(event.replyToken, {
@@ -307,6 +370,39 @@ function getCurrentMonthStr() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 }
 
+// 分類預算設定用的快速選單
+function buildBudgetCategoryQuickReply() {
+  return {
+    items: BUDGETABLE_CATEGORIES.map((c) => ({
+      type: 'action',
+      action: { type: 'message', label: c, text: c },
+    })),
+  };
+}
+
+// 組出「查詢卡費」的文字內容：待繳金額、進行中的分期、卡費提醒日
+async function buildCardDetailText(userId) {
+  const cardBalance = await db.getCardBalance(userId);
+  const installments = await db.getUserActiveInstallments(userId);
+  const settings = await db.getUserSettings(userId);
+
+  let text = `💳 信用卡待繳：${cardBalance} 元`;
+  if (settings.cardDueDay) {
+    text += `\n每月 ${settings.cardDueDay} 號會提醒你繳費`;
+  }
+
+  if (installments.length > 0) {
+    const lines = installments
+      .map((i) => `・${i.category}：每期 ${i.monthly_amount} 元，還剩 ${i.remaining_periods}/${i.total_periods} 期`)
+      .join('\n');
+    text += `\n\n進行中的分期：\n${lines}`;
+  } else {
+    text += '\n\n目前沒有進行中的分期';
+  }
+
+  return text;
+}
+
 // 解析「1～28」之間的日期數字，其餘一律視為無效（避開 29/30/31 在短月不存在的問題）
 function parseValidDayOfMonth(text) {
   const match = text.match(/(\d{1,2})/);
@@ -317,16 +413,19 @@ function parseValidDayOfMonth(text) {
 }
 
 // Flex 卡片回覆失敗時，退而求其次改用純文字，確保使用者不會完全沒反應
-async function replyCardWithFallback(event, card, type, category, amount, dogReply, monthNet, cardBalance) {
+async function replyCardWithFallback(event, card, type, category, amount, dogReply, monthNet, cardBalance, categoryBudget) {
   try {
     return await client.replyMessage(event.replyToken, card);
   } catch (err) {
     console.error('Flex 卡片回覆失敗，改用純文字:', err.originalError?.response?.data || err.message || err);
     const netText = monthNet !== null ? `\n本月結餘：${monthNet >= 0 ? '+' : ''}${monthNet} 元` : '';
     const cardText = cardBalance !== null && cardBalance > 0 ? `\n💳 信用卡待繳：${cardBalance} 元` : '';
+    const budgetText = categoryBudget
+      ? `\n${categoryBudget.over ? '⚠️ ' : ''}${category}預算：${categoryBudget.spent}／${categoryBudget.limit} 元`
+      : '';
     return client.replyMessage(event.replyToken, {
       type: 'text',
-      text: `${type === 'income' ? '💰' : '🧾'} ${category} ${amount} 元\n${dogReply}${netText}${cardText}`,
+      text: `${type === 'income' ? '💰' : '🧾'} ${category} ${amount} 元\n${dogReply}${netText}${cardText}${budgetText}`,
     });
   }
 }
@@ -368,7 +467,22 @@ async function handlePostback(event, userId) {
     const text = `本月目前狀況：\n收入：${summary.totalIncome} 元\n支出：${summary.totalExpense} 元\n結餘：${summary.net} 元${
       lines ? `\n\n支出分類：\n${lines}` : ''
     }${goalText}${cardText}`;
-    return client.replyMessage(event.replyToken, { type: 'text', text });
+    return client.replyMessage(event.replyToken, {
+      type: 'text',
+      text,
+      quickReply: {
+        items: [
+          {
+            type: 'action',
+            action: { type: 'postback', label: '💳 卡費明細', data: 'action=query_card_detail', displayText: '查詢卡費' },
+          },
+        ],
+      },
+    });
+  }
+
+  if (action === 'query_card_detail') {
+    return client.replyMessage(event.replyToken, { type: 'text', text: await buildCardDetailText(userId) });
   }
 
   if (action === 'settings') {
@@ -380,6 +494,10 @@ async function handlePostback(event, userId) {
           {
             type: 'action',
             action: { type: 'postback', label: '💰 存錢目標', data: 'action=setting_goal', displayText: '存錢目標' },
+          },
+          {
+            type: 'action',
+            action: { type: 'postback', label: '🎯 分類預算', data: 'action=setting_budget', displayText: '分類預算' },
           },
           {
             type: 'action',
@@ -403,6 +521,15 @@ async function handlePostback(event, userId) {
     return client.replyMessage(event.replyToken, {
       type: 'text',
       text: '汪！要幫你設定這個月的存錢目標嗎？\n直接輸入金額就好，例如：5000',
+    });
+  }
+
+  if (action === 'setting_budget') {
+    await db.setUserState(userId, 'awaiting_budget_category');
+    return client.replyMessage(event.replyToken, {
+      type: 'text',
+      text: '汪！要設定哪個分類的預算上限？點下面按鈕選一個～',
+      quickReply: buildBudgetCategoryQuickReply(),
     });
   }
 
