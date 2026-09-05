@@ -10,7 +10,7 @@ const path = require('path');
 
 const db = require('./db');
 const { processMessage, generateMonthlyReport } = require('./persona');
-const { buildRecordConfirmCard, buildCardChargeCard, buildMonthlyReportCard } = require('./flexMessages');
+const { buildRecordConfirmCard, buildCardChargeCard, buildInstallmentCard, buildMonthlyReportCard } = require('./flexMessages');
 const { richMenuObject } = require('./richmenu');
 
 const config = {
@@ -86,6 +86,64 @@ async function handleEvent(event) {
     });
   }
 
+  // 卡費繳款提醒日設定
+  if (currentState === 'awaiting_card_due_day_input') {
+    await db.clearUserState(userId);
+    const day = parseValidDayOfMonth(userText);
+    if (day === null) {
+      return client.replyMessage(event.replyToken, {
+        type: 'text',
+        text: '汪？請輸入 1～28 之間的數字就好，例如：15',
+      });
+    }
+    await db.setCardDueDay(userId, day);
+    return client.replyMessage(event.replyToken, {
+      type: 'text',
+      text: `收到！每個月 ${day} 號如果還有卡費待繳，我會提醒你 🐶`,
+    });
+  }
+
+  // 月報推送日設定
+  if (currentState === 'awaiting_report_day_input') {
+    await db.clearUserState(userId);
+    const day = parseValidDayOfMonth(userText);
+    if (day === null) {
+      return client.replyMessage(event.replyToken, {
+        type: 'text',
+        text: '汪？請輸入 1～28 之間的數字就好，例如：1',
+      });
+    }
+    await db.setReportDay(userId, day);
+    return client.replyMessage(event.replyToken, {
+      type: 'text',
+      text: `收到！之後每個月 ${day} 號會傳上個月的財務報告給你 🐶`,
+    });
+  }
+
+  // 重置資料確認流程
+  if (currentState === 'awaiting_reset_confirm') {
+    await db.clearUserState(userId);
+    if (userText.trim() === '確定重置') {
+      try {
+        await db.resetUserData(userId);
+        return client.replyMessage(event.replyToken, {
+          type: 'text',
+          text: '好，全部清空了，回到全新的開始 🐶 有什麼想記的都可以再跟我說！',
+        });
+      } catch (err) {
+        console.error('重置資料失敗:', err);
+        return client.replyMessage(event.replyToken, {
+          type: 'text',
+          text: '汪！重置的時候好像出了點狀況，麻煩再試一次。',
+        });
+      }
+    }
+    return client.replyMessage(event.replyToken, {
+      type: 'text',
+      text: '好，取消重置，資料都還在，別擔心 🐶',
+    });
+  }
+
   let forcedType = null;
   if (currentState === 'awaiting_expense_input') forcedType = 'expense';
   if (currentState === 'awaiting_income_input') forcedType = 'income';
@@ -141,7 +199,45 @@ async function handleEvent(event) {
       return replyCardWithFallback(event, card, 'expense', '卡費', amount, result.dog_reply, monthNet, newBalance);
     }
 
-    // ===== 分支二：一般消費刷卡 —— 不計入當月一般支出，先累加進卡費待繳 =====
+    // ===== 分支二：分期消費 —— 記一筆分期，這個月先自動扣一期到卡費待繳 =====
+    if (type === 'expense' && result.is_installment && result.installment_periods > 1) {
+      const totalPeriods = result.installment_periods;
+      const monthlyAmount = Math.round(amount / totalPeriods);
+      const currentMonthStr = getCurrentMonthStr();
+
+      await db.insertInstallment({
+        userId,
+        category,
+        note: result.note,
+        totalAmount: amount,
+        monthlyAmount,
+        totalPeriods,
+        remainingPeriods: totalPeriods - 1,
+        lastBilledMonth: currentMonthStr,
+      });
+      const newBalance = await db.adjustCardBalance(userId, monthlyAmount);
+
+      const card = buildInstallmentCard({
+        category,
+        totalAmount: amount,
+        monthlyAmount,
+        totalPeriods,
+        note: result.note,
+        dogReply: result.dog_reply,
+        cardBalance: newBalance,
+      });
+      try {
+        return await client.replyMessage(event.replyToken, card);
+      } catch (err) {
+        console.error('分期卡片回覆失敗，改用純文字:', err.originalError?.response?.data || err.message || err);
+        return client.replyMessage(event.replyToken, {
+          type: 'text',
+          text: `📅 ${category} 分 ${totalPeriods} 期，每期 ${monthlyAmount} 元\n${result.dog_reply}\n目前信用卡待繳：${newBalance} 元`,
+        });
+      }
+    }
+
+    // ===== 分支三：一般消費刷卡 —— 不計入當月一般支出，先累加進卡費待繳 =====
     if (type === 'expense' && paymentMethod === 'credit_card') {
       const newBalance = await db.adjustCardBalance(userId, amount);
       const card = buildCardChargeCard({
@@ -162,7 +258,7 @@ async function handleEvent(event) {
       }
     }
 
-    // ===== 分支三：一般現金收支 =====
+    // ===== 分支四：一般現金收支 =====
     await db.insertRecord({
       userId,
       category,
@@ -203,6 +299,21 @@ async function handleEvent(event) {
     type: 'text',
     text: result.dog_reply,
   });
+}
+
+// 取得目前月份字串 'YYYY-MM'，用來判斷分期本月是否已扣款
+function getCurrentMonthStr() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+// 解析「1～28」之間的日期數字，其餘一律視為無效（避開 29/30/31 在短月不存在的問題）
+function parseValidDayOfMonth(text) {
+  const match = text.match(/(\d{1,2})/);
+  if (!match) return null;
+  const day = parseInt(match[1], 10);
+  if (day < 1 || day > 28) return null;
+  return day;
 }
 
 // Flex 卡片回覆失敗時，退而求其次改用純文字，確保使用者不會完全沒反應
@@ -261,10 +372,61 @@ async function handlePostback(event, userId) {
   }
 
   if (action === 'settings') {
+    return client.replyMessage(event.replyToken, {
+      type: 'text',
+      text: '汪！要設定什麼呢？點下面按鈕選一個～',
+      quickReply: {
+        items: [
+          {
+            type: 'action',
+            action: { type: 'postback', label: '💰 存錢目標', data: 'action=setting_goal', displayText: '存錢目標' },
+          },
+          {
+            type: 'action',
+            action: { type: 'postback', label: '💳 卡費提醒日', data: 'action=setting_card_due', displayText: '卡費提醒日' },
+          },
+          {
+            type: 'action',
+            action: { type: 'postback', label: '📅 月報推送日', data: 'action=setting_report_day', displayText: '月報推送日' },
+          },
+          {
+            type: 'action',
+            action: { type: 'postback', label: '🗑️ 重置資料', data: 'action=setting_reset', displayText: '重置資料' },
+          },
+        ],
+      },
+    });
+  }
+
+  if (action === 'setting_goal') {
     await db.setUserState(userId, 'awaiting_goal_input');
     return client.replyMessage(event.replyToken, {
       type: 'text',
       text: '汪！要幫你設定這個月的存錢目標嗎？\n直接輸入金額就好，例如：5000',
+    });
+  }
+
+  if (action === 'setting_card_due') {
+    await db.setUserState(userId, 'awaiting_card_due_day_input');
+    return client.replyMessage(event.replyToken, {
+      type: 'text',
+      text: '汪！請輸入每個月的幾號要提醒你繳卡費，範圍 1～28，例如：15',
+    });
+  }
+
+  if (action === 'setting_report_day') {
+    await db.setUserState(userId, 'awaiting_report_day_input');
+    return client.replyMessage(event.replyToken, {
+      type: 'text',
+      text: '汪！請輸入每個月幾號要收到上個月的財務報告，範圍 1～28，例如：1',
+    });
+  }
+
+  if (action === 'setting_reset') {
+    await db.setUserState(userId, 'awaiting_reset_confirm');
+    return client.replyMessage(event.replyToken, {
+      type: 'text',
+      text: '⚠️ 確定嗎？這會刪除所有記帳紀錄、卡費待繳、存錢目標、分期、日期設定，無法復原。\n\n如果確定，請回覆「確定重置」；輸入其他任何內容都會取消。',
     });
   }
 
