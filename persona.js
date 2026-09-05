@@ -35,7 +35,15 @@ const PARSING_RULES = `
 信用卡付款判斷：
 - 如果訊息提到「刷卡」「信用卡」「刷」等字眼，payment_method 設為 "credit_card"；否則預設 "cash"。
 - 如果訊息是在「繳/還信用卡帳單」（例如「繳卡費」「還信用卡」「卡費繳了」「信用卡帳單」），這是一筆還款動作：category 固定設為 "卡費"，type 設為 "expense"，payment_method 設為 "cash"，並把 is_card_payment 設為 true。
-- 其餘一般消費（不論是否刷卡）is_card_payment 一律為 false。`;
+- 其餘一般消費（不論是否刷卡）is_card_payment 一律為 false。
+
+分期付款判斷：
+- 如果訊息提到「分期」「分X期」「分X個月」（例如「iPhone 24000 分12期」「分期6個月 買了電腦 18000」），這是一筆分期消費：
+  - is_installment 設為 true，installment_periods 設為期數（例如 12）
+  - amount 設為「總金額」（例如 24000，不是每期金額，換算交給程式處理）
+  - payment_method 一律視為 "credit_card"（分期本來就是刷卡才有的功能）
+  - category 依項目本身判斷（例如買 3C 用品歸「購物」）
+- 如果沒有提到分期字眼，is_installment 一律為 false，installment_periods 為 null。`;
 
 // ===== 呼叫 Gemini，讓它同時判斷「是否為記帳」+ 解析 + 生成小狗回覆 =====
 // forcedType: null（不限定，AI 自行判斷）｜ 'expense'（使用者剛點了 Rich Menu 的「支出」）｜ 'income'（點了「收入」）
@@ -67,7 +75,7 @@ ${recentContext ? `使用者最近的記帳紀錄（供參考語氣，不用複�
 使用者訊息：「${userText}」
 
 只回傳以下 JSON 格式，不要有任何其他文字、不要加 markdown 程式碼框：
-{"is_record": true or false, "category": "字串或null", "amount": 數字或null, "type": "income或expense或null", "note": "字串或null", "payment_method": "cash或credit_card", "is_card_payment": true or false, "dog_reply": "小狗的回覆文字"}`;
+{"is_record": true or false, "category": "字串或null", "amount": 數字或null, "type": "income或expense或null", "note": "字串或null", "payment_method": "cash或credit_card", "is_card_payment": true or false, "is_installment": true or false, "installment_periods": 數字或null, "dog_reply": "小狗的回覆文字"}`;
 
   try {
     const result = await model.generateContent(prompt);
@@ -83,6 +91,8 @@ ${recentContext ? `使用者最近的記帳紀錄（供參考語氣，不用複�
       note: null,
       payment_method: 'cash',
       is_card_payment: false,
+      is_installment: false,
+      installment_periods: null,
       dog_reply: '汪...我剛剛好像斷線恍神了，可以再跟我說一次嗎？',
     };
   }
@@ -164,6 +174,8 @@ function parseJsonSafely(text) {
       note: null,
       payment_method: 'cash',
       is_card_payment: false,
+      is_installment: false,
+      installment_periods: null,
       dog_reply: '汪？我剛剛好像放空了一下，可以再說一次嗎？',
     };
   }
