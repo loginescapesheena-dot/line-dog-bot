@@ -436,8 +436,46 @@ async function handlePostback(event, userId) {
   });
 }
 
-// ===== 每月報告觸發端點 =====
-// monthOffset query 參數可用來測試：-1（預設，抓上個月）｜ 0（測試用，抓這個月目前資料）
+// 產生並推播「單一使用者」的月度報告，回傳是否有實際送出（無資料則不送）
+async function sendMonthlyReportToUser(userId, monthOffset) {
+  const now = new Date();
+  const targetDate = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  const monthLabel = `${targetDate.getFullYear()}年${targetDate.getMonth() + 1}月`;
+
+  const summary = await db.getMonthSummary(userId, monthOffset);
+  if (summary.recordCount === 0) return false;
+
+  const goal = await db.getUserGoal(userId);
+  const goalInfo = goal ? { goal } : null;
+  const cardBalance = await db.getCardBalance(userId);
+  const report = await generateMonthlyReport(summary, monthLabel, goalInfo);
+
+  const card = buildMonthlyReportCard({
+    monthLabel,
+    totalIncome: summary.totalIncome,
+    totalExpense: summary.totalExpense,
+    net: summary.net,
+    byCategory: summary.byCategory,
+    goal,
+    highlight: report.highlight,
+    advice: report.advice,
+    cardBalance,
+  });
+
+  try {
+    await client.pushMessage(userId, card);
+  } catch (err) {
+    console.error(`Flex 月報卡片推播失敗，改用純文字給 ${userId}:`, err.originalError?.response?.data || err.message || err);
+    await client.pushMessage(userId, {
+      type: 'text',
+      text: `${monthLabel} 財務報告\n收入：${summary.totalIncome} 元\n支出：${summary.totalExpense} 元\n結餘：${summary.net} 元\n\n${report.highlight}\n\n🐶 ${report.advice}`,
+    });
+  }
+  return true;
+}
+
+// ===== 每月報告觸發端點（手動測試用，會送給「所有」使用者，不管各自設定的推送日）=====
+// monthOffset query 參數：-1（預設，抓上個月）｜ 0（測試用，抓這個月目前資料）
 app.get('/trigger-monthly-report', async (req, res) => {
   if (req.query.secret !== process.env.CRON_SECRET) {
     return res.status(403).send('Forbidden');
@@ -446,48 +484,99 @@ app.get('/trigger-monthly-report', async (req, res) => {
   const monthOffset = req.query.monthOffset !== undefined ? parseInt(req.query.monthOffset, 10) : -1;
   res.status(200).send('Monthly report job started');
 
-  console.log('開始發送每月財務報告...');
+  console.log('開始發送每月財務報告（手動測試，全體使用者）...');
   const userIds = await db.getAllUserIds();
-  const now = new Date();
-  const targetDate = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
-  const monthLabel = `${targetDate.getFullYear()}年${targetDate.getMonth() + 1}月`;
-
   for (const userId of userIds) {
     try {
-      const summary = await db.getMonthSummary(userId, monthOffset);
-      if (summary.recordCount === 0) continue;
-
-      const goal = await db.getUserGoal(userId);
-      const goalInfo = goal ? { goal } : null;
-      const cardBalance = await db.getCardBalance(userId);
-      const report = await generateMonthlyReport(summary, monthLabel, goalInfo);
-
-      const card = buildMonthlyReportCard({
-        monthLabel,
-        totalIncome: summary.totalIncome,
-        totalExpense: summary.totalExpense,
-        net: summary.net,
-        byCategory: summary.byCategory,
-        goal,
-        highlight: report.highlight,
-        advice: report.advice,
-        cardBalance,
-      });
-
-      try {
-        await client.pushMessage(userId, card);
-      } catch (err) {
-        console.error(`Flex 月報卡片推播失敗，改用純文字給 ${userId}:`, err.originalError?.response?.data || err.message || err);
-        await client.pushMessage(userId, {
-          type: 'text',
-          text: `${monthLabel} 財務報告\n收入：${summary.totalIncome} 元\n支出：${summary.totalExpense} 元\n結餘：${summary.net} 元\n\n${report.highlight}\n\n🐶 ${report.advice}`,
-        });
-      }
+      await sendMonthlyReportToUser(userId, monthOffset);
     } catch (err) {
       console.error(`發送月報給 ${userId} 失敗:`, err);
     }
   }
   console.log('每月財務報告發送完成');
+});
+
+// ===== 每日自動排程端點 =====
+// 建議用外部免費排程服務（cron-job.org）每天呼叫一次這支 API，取代原本的每月排程
+// https://你的網址/trigger-daily-tasks?secret=你的CRON_SECRET
+app.get('/trigger-daily-tasks', async (req, res) => {
+  if (req.query.secret !== process.env.CRON_SECRET) {
+    return res.status(403).send('Forbidden');
+  }
+
+  res.status(200).send('Daily tasks started');
+
+  const today = new Date();
+  const todayDay = today.getDate();
+  const currentMonthStr = getCurrentMonthStr();
+
+  // ===== 1. 分期自動扣款：本月還沒扣過、還有剩餘期數的通通處理掉 =====
+  console.log('檢查本月分期扣款...');
+  try {
+    const dueInstallments = await db.getDueInstallments(currentMonthStr);
+    const billedByUser = {};
+
+    for (const inst of dueInstallments) {
+      try {
+        await db.billInstallment(inst.id, currentMonthStr);
+        await db.adjustCardBalance(inst.user_id, Number(inst.monthly_amount));
+        if (!billedByUser[inst.user_id]) billedByUser[inst.user_id] = [];
+        billedByUser[inst.user_id].push({
+          category: inst.category,
+          monthlyAmount: Number(inst.monthly_amount),
+          remainingAfter: inst.remaining_periods - 1,
+          totalPeriods: inst.total_periods,
+        });
+      } catch (err) {
+        console.error(`分期扣款失敗（installment id ${inst.id}）:`, err);
+      }
+    }
+
+    for (const userId of Object.keys(billedByUser)) {
+      try {
+        const items = billedByUser[userId];
+        const lines = items
+          .map((i) => `・${i.category}：${i.monthlyAmount} 元（還剩 ${i.remainingAfter}/${i.totalPeriods} 期）`)
+          .join('\n');
+        const cardBalance = await db.getCardBalance(userId);
+        await client.pushMessage(userId, {
+          type: 'text',
+          text: `🐶 這個月的分期扣款已經自動記到卡費囉：\n${lines}\n\n目前信用卡待繳：${cardBalance} 元`,
+        });
+      } catch (err) {
+        console.error(`分期扣款通知推播失敗（${userId}）:`, err);
+      }
+    }
+  } catch (err) {
+    console.error('分期自動扣款流程失敗:', err);
+  }
+
+  // ===== 2. 個人化月報推送 + 卡費繳款提醒 =====
+  console.log('檢查月報推送日與卡費提醒日...');
+  const userIds = await db.getAllUserIds();
+  for (const userId of userIds) {
+    try {
+      const settings = await db.getUserSettings(userId);
+
+      if (settings.reportDay === todayDay) {
+        await sendMonthlyReportToUser(userId, -1);
+      }
+
+      if (settings.cardDueDay === todayDay) {
+        const cardBalance = await db.getCardBalance(userId);
+        if (cardBalance > 0) {
+          await client.pushMessage(userId, {
+            type: 'text',
+            text: `🔔 汪！今天是你設定的繳卡費提醒日，目前信用卡待繳 ${cardBalance} 元，記得去繳費喔！`,
+          });
+        }
+      }
+    } catch (err) {
+      console.error(`每日任務處理失敗（${userId}）:`, err);
+    }
+  }
+
+  console.log('每日自動排程執行完成');
 });
 
 // ===== Rich Menu 一次性設定端點 =====
