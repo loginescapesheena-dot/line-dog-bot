@@ -6,6 +6,20 @@ const { GoogleGenerativeAI } = require('@google/generative-ai');
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: 'gemini-3.6-flash' });
 
+// 呼叫 Gemini，遇到暫時性過載（503）或逾時會自動重試一次，減少偶發性失敗
+async function generateContentWithRetry(prompt, retries = 1) {
+  try {
+    return await model.generateContent(prompt);
+  } catch (err) {
+    const isRetryable = err.status === 503 || /503|overloaded|high demand/i.test(err.message || '');
+    if (retries > 0 && isRetryable) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      return generateContentWithRetry(prompt, retries - 1);
+    }
+    throw err;
+  }
+}
+
 // ===== 小狗的靈魂：個性設定 =====
 const DOG_PERSONA = `你是「記帳小狗」，一隻幫主人記帳的可愛小狗，個性設定如下：
 
@@ -78,7 +92,7 @@ ${recentContext ? `使用者最近的記帳紀錄（供參考語氣，不用複�
 {"is_record": true or false, "category": "字串或null", "amount": 數字或null, "type": "income或expense或null", "note": "字串或null", "payment_method": "cash或credit_card", "is_card_payment": true or false, "is_installment": true or false, "installment_periods": 數字或null, "dog_reply": "小狗的回覆文字"}`;
 
   try {
-    const result = await model.generateContent(prompt);
+    const result = await generateContentWithRetry(prompt);
     const rawText = result.response.text().trim();
     return parseJsonSafely(rawText);
   } catch (err) {
@@ -130,7 +144,7 @@ ${categoryLines || '（本月無支出紀錄）'}${goalLine}
 {"highlight": "字串", "advice": "字串"}`;
 
   try {
-    const result = await model.generateContent(prompt);
+    const result = await generateContentWithRetry(prompt);
     const rawText = result.response.text().trim();
     const parsed = parseReportJsonSafely(rawText, summary);
     return parsed;
