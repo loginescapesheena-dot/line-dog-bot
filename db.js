@@ -238,9 +238,59 @@ async function billInstallment(installmentId, currentMonthStr) {
   if (updateErr) throw updateErr;
 }
 
+// 查某使用者目前「還有剩餘期數」的所有分期（供查詢卡費明細用）
+async function getUserActiveInstallments(userId) {
+  const { data, error } = await supabase
+    .from('installments')
+    .select('category, monthly_amount, remaining_periods, total_periods, note')
+    .eq('user_id', userId)
+    .gt('remaining_periods', 0)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return data;
+}
+
+// ===== 分類預算上限 =====
+async function setCategoryBudget(userId, category, monthlyLimit) {
+  const { error } = await supabase
+    .from('category_budgets')
+    .upsert(
+      { user_id: userId, category, monthly_limit: monthlyLimit, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id,category' }
+    );
+  if (error) throw error;
+}
+
+async function getCategoryBudget(userId, category) {
+  const { data, error } = await supabase
+    .from('category_budgets')
+    .select('monthly_limit')
+    .eq('user_id', userId)
+    .eq('category', category)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? Number(data.monthly_limit) : null;
+}
+
+async function getCategoryBudgets(userId) {
+  const { data, error } = await supabase
+    .from('category_budgets')
+    .select('category, monthly_limit')
+    .eq('user_id', userId);
+  if (error) throw error;
+  return data.map((r) => ({ category: r.category, monthlyLimit: Number(r.monthly_limit) }));
+}
+
 // ===== 重置：清空一個使用者的所有記帳相關資料（不移除 users 名單本身）=====
 async function resetUserData(userId) {
-  const tables = ['records', 'installments', 'user_goals', 'user_card_balance', 'user_settings'];
+  const tables = [
+    'records',
+    'installments',
+    'user_goals',
+    'user_card_balance',
+    'user_settings',
+    'category_budgets',
+  ];
   for (const table of tables) {
     const { error } = await supabase.from(table).delete().eq('user_id', userId);
     if (error) throw error;
@@ -266,5 +316,9 @@ module.exports = {
   insertInstallment,
   getDueInstallments,
   billInstallment,
+  getUserActiveInstallments,
+  setCategoryBudget,
+  getCategoryBudget,
+  getCategoryBudgets,
   resetUserData,
 };
